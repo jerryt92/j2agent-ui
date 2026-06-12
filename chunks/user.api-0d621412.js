@@ -1,0 +1,1 @@
+import{b as s,a as e,p as a}from"../index-caaaac85.js";const r=()=>s.get(`/v1${e}rest/${a}/users`),t=r=>s.post(`/v1${e}rest/${a}/users`,r),$=r=>s.delete(`/v1${e}rest/${a}/users`,{params:{"user-id":r}}),u=r=>s.put(`/v1${e}rest/${a}/users/role`,r),p=r=>s.put(`/v1${e}rest/${a}/users/password`,r);export{p as a,t as c,$ as d,r as g,u};
