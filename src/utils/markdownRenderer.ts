@@ -69,7 +69,6 @@ const diagramMarkupCacheSessionCounts = new Map<string, number>()
 const pendingRefitBodies = new Set<HTMLElement>()
 const diagramFitInProgress = new WeakSet<HTMLElement>()
 let batchRefitRafId = 0
-let renderMarkdownBlocksChain: Promise<void> = Promise.resolve()
 let markdownRenderGeneration = 0
 
 const diagramFitObservers = new WeakMap<HTMLElement, ResizeObserver>()
@@ -620,7 +619,7 @@ export const getMarkdownCodeBlockText = (block: Element) => {
 
 const MD_P_IMAGE_CLASS = 'md-p-image'
 
-md.renderer.rules.paragraph_open = function () {
+md.renderer.rules.paragraph_open = function() {
   return '<p style="line-height: var(--n-font-line-height-4);">'
 }
 
@@ -1104,10 +1103,10 @@ let streamTailThrottleTimer = 0
 let streamTailLastRunAt = 0
 let pendingStreamTailUpdate:
   | {
-      root: HTMLElement
-      markdown: string
-      appendEllipsis: boolean
-    }
+  root: HTMLElement
+  markdown: string
+  appendEllipsis: boolean
+}
   | null = null
 
 const flushPendingStreamTailUpdate = () => {
@@ -1335,7 +1334,13 @@ type ViewportObserverState = {
 }
 
 const viewportObserverStates = new WeakMap<Element, ViewportObserverState>()
-let viewportDrainHandler: (() => void) | null = null
+/**
+ * 每个滚动容器独立维护调度回调。
+ *
+ * Markdown 正文、文档预览和聊天消息可能同时存在；单一全局回调会让
+ * 后一次渲染覆盖前一次渲染的 drain，导致图表要等到下一次滚动才出现。
+ */
+const viewportDrainHandlers = new WeakMap<Element, Set<() => void>>()
 
 const ensureViewportObserver = (
   scrollRoot: Element,
@@ -1374,7 +1379,7 @@ const ensureViewportObserver = (
           }
         }
         if (shouldDrain) {
-          viewportDrainHandler?.()
+          viewportDrainHandlers.get(scrollRoot)?.forEach((handler) => handler())
         }
       },
       { root: scrollRoot, rootMargin, threshold: 0 }
@@ -1412,11 +1417,13 @@ const cleanupViewportScheduling = (
   blocks: Element[],
   handler: () => void
 ) => {
-  if (viewportDrainHandler === handler) {
-    viewportDrainHandler = null
-  }
   if (!scrollRoot) {
     return
+  }
+  const handlers = viewportDrainHandlers.get(scrollRoot)
+  handlers?.delete(handler)
+  if (handlers?.size === 0) {
+    viewportDrainHandlers.delete(scrollRoot)
   }
   const state = viewportObserverStates.get(scrollRoot)
   if (!state) {
@@ -1622,7 +1629,14 @@ const renderWithViewportScheduling = async (
     }
   }
 
-  viewportDrainHandler = scheduleDrain
+  if (scrollRoot) {
+    let handlers = viewportDrainHandlers.get(scrollRoot)
+    if (!handlers) {
+      handlers = new Set()
+      viewportDrainHandlers.set(scrollRoot, handlers)
+    }
+    handlers.add(scheduleDrain)
+  }
 
   if (scrollRoot && typeof IntersectionObserver !== 'undefined') {
     ensureViewportObserver(scrollRoot, prefetchRootMargin)
@@ -2854,11 +2868,9 @@ export const renderMarkdownBlocks = (
   root: ParentNode | Element,
   options?: RenderMarkdownBlocksOptions
 ): Promise<void> => {
-  const task = renderMarkdownBlocksChain.then(() =>
-    executeRenderMarkdownBlocks(root, options)
-  )
-  renderMarkdownBlocksChain = task.catch(() => {})
-  return task
+  // 不再使用全局串行队列：正文的异步图表只在自己的 root 内调度，
+  // 一个文档的 Mermaid/PlantUML 不应阻塞另一个文档的首屏和预览。
+  return executeRenderMarkdownBlocks(root, options)
 }
 
 /** 对 root 内已渲染图表按当前宽度重新适配外框高度 */
@@ -2891,7 +2903,6 @@ export const pauseDiagramReflowInRoot = (root: Element | null | undefined) => {
 /** keep-alive 切走或会话隐藏时：清空排队中的 Markdown/图表任务，避免在不可见 DOM 上继续渲染 */
 export const cancelPendingMarkdownRenderWork = (scope?: Element | null) => {
   markdownRenderGeneration++
-  renderMarkdownBlocksChain = Promise.resolve()
   void getDiagramRuntime().then((runtime) =>
     runtime.cancelDiagramRenderWorkerTasks()
   )
@@ -2935,7 +2946,6 @@ export const resetMarkdownRendererForTest = () => {
     cancelAnimationFrame(batchRefitRafId)
     batchRefitRafId = 0
   }
-  renderMarkdownBlocksChain = Promise.resolve()
   markdownRenderGeneration = 0
   if (streamTailUpdateRafId) {
     cancelAnimationFrame(streamTailUpdateRafId)
